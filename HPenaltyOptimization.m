@@ -1,0 +1,86 @@
+function [gSharp,gTK,aTK] = HPenaltyOptimization(k,HEST,Fart,Rin,t)
+
+global DiscreteDisk
+
+
+nbcapteur = length(Fart);
+capteur = 0:2*pi/nbcapteur:2*pi-2*pi/nbcapteur;
+
+
+h = HEST;
+[Ueta,Seta,Veta]=svd(Fart);             % Ueta et Veta sont des matrices de rotations, Seta une matrice diagonale contenant les valeurs singulières de Feta.
+SIGMAN=diag(Seta);                      % SIGMAN est un vecteur contenant la diagonale de Seta.
+SQ=SIGMAN.^2;                           % Vecteur contenant les valeurs propres de (Feta)'*Feta.
+Us=Ueta';
+NbPoints = length(DiscreteDisk(1,:));
+options=optimset('Display','off');                                          
+
+
+aTK = zeros(1,NbPoints);
+gSharp = zeros(nbcapteur,NbPoints);
+gTK = zeros(nbcapteur,NbPoints);
+
+dx=cos(capteur);dy=sin(capteur);               % coordonnées cartésiennes des capteurs.
+
+%%H = HArtSoftDisk(k,Rin,t,nbcapteur);
+%%nH = norm(H);
+
+
+[Vr,Dr]=eig((Fart+Fart')/2);
+[Vi,Di]=eig((Fart-Fart')/(2*sqrt(-1)));
+Fsharp=Vr*abs(Dr)*Vr^-1+Vi*abs(Di)*Vi^-1;
+NFSharp = norm(Fsharp);
+        
+    for i = 1:NbPoints 
+    %% première itération donnée par la LSM
+     
+        z = DiscreteDisk(:,i);
+              
+        rhs=transpose(1/sqrt(8.*pi*k)*exp(1i*pi/4.)*(exp(-sqrt(-1).*k.*(dx.*z(1)+dy.*z(2))))); %/norm(exp(-sqrt(-1).*k.*(dx*z(1)+dy*z(2)))));
+        sc=Us*rhs;
+        GUP=conj(sc).*sc;
+        % Definit la fonction dfun ici pour Morozov
+        f = @(x) sum( GUP.*(x^2 - (h^2 * SQ))./((SQ+x).^2));
+        
+        
+        
+        gammamin=h*min(SIGMAN);    % borne inf pour la recherche de alpha* de morozov.
+        gammamax=h*max(SIGMAN);    % le alpha(delta) de morozov se trouve dans l'intervalle [gammamin,gammamax].
+      
+        
+        [a,fval,exitflag] = fzero(f,[gammamin,gammamax],options); %Faire par dichotomie pour voir (nombre de dichotomie?)
+        % a =morozov,     fval = dfun(a),     exitflag < 0 => aucuns zero 
+
+        if a<0||exitflag<0
+            disp(['Problem: a= ',num2str(a),' Resetting a=0'])
+            disp(['Problem: exitflag= ' num2str(exitflag)])
+            a=0;
+        end
+
+        aTK(i)=a;
+        Valxi=(SIGMAN.*sc)./(SQ+a);
+        g = Veta*Valxi;
+        gTK(:,i) = g;
+        
+        
+    %% Optimisation avec ||Hg||^2
+        
+%         alpha = a;
+%         FH = @(X) alpha * norm(H*(X(:,1) + 1i*X(:,2)))^2 +...
+%             norm(Feta*(X(:,1) + 1i*X(:,2)) - rhs)^2;
+%         
+%         gStarTemp = fminunc(FH,[real(g),imag(g)]);
+%         gStar(:,i) = gStarTemp(:,1) + 1i*gStarTemp(:,2);
+
+
+
+        aSharp = a/NFSharp;
+        gSharp(:,i) = (aSharp*Fsharp+aSharp*HEST*eye(nbcapteur)+Fart'*Fart)^-1*(Fart'*rhs);
+
+
+        
+    end
+    
+    
+
+end

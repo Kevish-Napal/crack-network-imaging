@@ -1,0 +1,271 @@
+// FF computation using formula Colton Kress p.75 eq. (3.87)
+// One line of the output matrix correspond to the response of a given incidente
+// plane wave.
+// Three farfield are computed: Dirichlet, Neumann and Impedance associated to
+// a disk
+
+int PlotFlag = 0;
+//////////////////////////////////////////////
+real k =3.;
+
+////// Definition des sources, capteurs et matrice qui va contenir les données du FF à chaque itérations /////////////
+int Nbcapteur=10; // Big N in the paper, number of sources and measurements
+real[int] thetaSource(Nbcapteur);
+real[int] thetaRecepteur(Nbcapteur);
+thetaSource=0:(2*pi/Nbcapteur):2*pi;
+thetaRecepteur =0:(2*pi/Nbcapteur):2*pi;
+real[int, int] MSRRealinftyD(Nbcapteur,Nbcapteur);  // pour sauvegarder la matrice de réponse
+real[int, int] MSRImaginftyD(Nbcapteur,Nbcapteur);
+
+real[int, int] MSRRealinftyN(Nbcapteur,Nbcapteur);  // pour sauvegarder la matrice de réponse
+real[int, int] MSRImaginftyN(Nbcapteur,Nbcapteur);
+
+real[int, int] MSRRealinftyI(Nbcapteur,Nbcapteur);  // pour sauvegarder la matrice de réponse
+real[int, int] MSRImaginftyI(Nbcapteur,Nbcapteur);
+//////////////////////////////////////////////////////////
+
+
+// Definition des borders et de leurs label:
+macro Grad(u) [dx(u),dy(u)]//
+real Rext= 10.; // radius of computation domain
+real Rin = 3.; // Obstacle impénétrable
+int Radiacond = 99;  // Condition de radiation sur ce bord
+int Obstacle = 96;
+border CercleExt(t=0,2.*pi){x=Rext*cos(t);y=Rext*sin(t);label = Radiacond;};
+real ax = -3.;
+real ay = 4.;
+border CercleIn(t=0,2.*pi){x=Rin*cos(t)+ax;y=Rin*sin(t)+ay;label = Obstacle;};
+
+
+real ttt=clock();
+
+real lambda = 2*pi/k; // (inutile pour des géométries circulaires)
+int NbMesh = 20; // Nombre de discretisation par unité de longueur
+int pTemp;
+pTemp = Rext*k*NbMesh;
+int pext = max(pTemp,60);
+pTemp = Rin*k*NbMesh;
+int pin = max(pTemp,60);
+
+
+mesh Th=buildmesh(CercleExt(pext) + CercleIn(-pin));
+
+//plot(Th,wait = 1);
+
+fespace FS2(Th,P2);
+
+
+////////////////////// Debut DtN //////////////////////////
+
+//int nbfpro =4*pext/(5*Rext/lambda);//pext/(10*Rext);
+real nbfprotemp = k*Rext;
+int nbfpro = k*Rext; // selon Houssem, le 10 est arbitraire c'est pour éviter qu'il n'y ait que 2 fonctions...
+cout<<"nombre de fonctions propres = " <<nbfpro<<endl;
+
+FS2<complex>  u,v;
+//fonction de la base de fourier
+func complex expin(real x1,real x2, int n)
+{
+	real theta = atan2(x2,x1);
+	return (exp(1i*n*theta)/sqrt(2*pi*Rext));
+}
+
+
+//matrice d'integration exp(intheta) contre les  elements finis sur le bord
+complex[int,int] vDtN( FS2.ndof, 2*nbfpro+1);
+matrix<complex> DtN;
+
+for (int n=-nbfpro;n<nbfpro+1;n++)
+{
+	func f= expin(x,y,n);
+	varf FiniFourier(uu,vv) = int1d(Th,Radiacond)(vv*f);
+	complex[int] temp = FiniFourier(0,FS2);
+	vDtN(:,n+nbfpro)=temp;
+}
+DtN=vDtN;
+
+
+// Construction de la matrice diagonale pour construire les EFL
+matrix<complex> D;
+complex[int] diagofD(2*nbfpro+1);
+complex hnr,hn0,hn1,hnp;
+
+hn0=j0(k*Rext)+1i*y0(k*Rext);
+hn1=-(j1(k*Rext)+1i*y1(k*Rext)); // Corrigée
+diagofD[nbfpro] = k*hn1/hn0;
+
+
+for (int n =1;n<nbfpro;n++)
+{
+	hnr =jn(n,k*Rext)+1.i*yn(n,k*Rext);
+	hnp = n*hnr/(k*Rext) - (jn(n+1,k*Rext)+1.i*yn(n+1,k*Rext));// Corrigée
+	diagofD[nbfpro+n] = k*hnp/hnr;
+	diagofD[nbfpro-n] = k*hnp/hnr;
+}
+D = [diagofD];
+
+
+// Assemblage final et réorganisation pour pouvoir l'integrer a la formulation variationnelle
+matrix<complex> EFL ;
+EFL = DtN*D;
+EFL= EFL*DtN';
+// On multiplie par moins 1 pour pouvoir l'ajouter à la formulation canonique de l'équation de Helmholtz
+// cad : grad(u)grad(v) - k^2uv  (signe plus devant le grad).
+EFL=-EFL;
+// EFL désigne donc l'opérateur -T où T est l'opérateur de Dirichlet to Neumann qui satisfait
+// d_n u_s = T u_s.
+
+			  ////////////////////// Fin DtN //////////////////////////
+
+
+matrix<complex> ADirichlet, B, AtmpDirichlet, ANeumann, AtmpNeumann, AImpedance, AtmpImpedance,FF;
+FS2<complex> F,G;
+FS2<complex> Usol, Usolconj,Usoltot;
+FS2 PlotTemp;
+FS2<complex> phiinfty ; //green function (radiation)
+FS2<complex> test;
+complex test2;
+
+// FarField
+varf FarField(u,v)= int1d(Th,Obstacle)(exp(1.i*pi/4.)/sqrt(8.*pi*k)*([N.x,N.y]'*Grad(v)*u-[N.x,N.y]'*Grad(u)*v)); //cf Colton Kress p.75 formule (3.87)
+FF=FarField(FS2,FS2);
+
+// Pour gérer la condition de dirichlet, on résout plutot léquation du champs total.
+// c'est plus pratique: la matrice de masse est alors indépendante de l'onde incidente.
+varf BiLiDirichlet(u,v)= int2d(Th)(Grad(v)'*Grad(u)-u*v'*k^2) + on(Obstacle,u=0); // bilinear form of helmholtz equation
+AtmpDirichlet=BiLiDirichlet(FS2,FS2);
+ADirichlet=AtmpDirichlet+EFL;
+set(ADirichlet,solver=sparsesolver);
+
+/// Neumann
+varf BiLiNeumann(u,v)= int2d(Th)(Grad(v)'*Grad(u)-u*v'*k^2); // bilinear form of helmholtz equation
+AtmpNeumann=BiLiNeumann(FS2,FS2);
+ANeumann=AtmpNeumann+EFL;
+set(ANeumann,solver=sparsesolver);
+
+/// Impedance
+varf BiLiImpedance(u,v)= int2d(Th)(Grad(v)'*Grad(u)-u*v'*k^2) - int1d(Th,Obstacle)(1i*u*v'); // bilinear form of helmholtz equation
+AtmpImpedance=BiLiImpedance(FS2,FS2);
+AImpedance=AtmpImpedance+EFL;
+set(AImpedance,solver=sparsesolver);
+
+for (int itercapteur=0;itercapteur<Nbcapteur;itercapteur++)
+	{ // boucle sur onde incidente
+		cout << itercapteur+1 << "/" << Nbcapteur << endl;
+
+		func PhiinftySource=exp(1.i*k*(cos(thetaSource(itercapteur))*x+sin(thetaSource(itercapteur))*y)); // incident plane waves : u^i
+		phiinfty = PhiinftySource;
+		varf TermeSource([phiinfty],[v]) = int1d(Th,Radiacond)([N.x,N.y]'*Grad(phiinfty)*v');
+		B = TermeSource(FS2,FS2);
+		F[]= B*phiinfty[];
+		G[] = EFL*phiinfty[];
+		F[] = F[] + G[];
+
+
+		// Dirichlet resolution
+		Usoltot[]=ADirichlet^-1*F[];
+		Usol = Usoltot-phiinfty;
+
+		if(PlotFlag==1){
+			PlotTemp = real(Usoltot);
+			plot(PlotTemp,fill=1,wait=1,value=1,cmm = "Usoltot Dirichlet");
+			PlotTemp = real(Usol);
+			plot(PlotTemp,fill=1,wait=1,value=1,cmm = "Usol Dirichlet");
+		}
+
+
+		 for (int nn=0;nn<Nbcapteur;nn++)
+		 { // Boucle de remplissage du FF
+				func PhiinftyRecepteur=exp(-1.i*k*(cos(thetaRecepteur(nn))*x+sin(thetaRecepteur(nn))*y));
+				phiinfty=PhiinftyRecepteur;
+				test[]=FF*phiinfty[];
+			       	Usolconj[]=conj(Usol[]);
+				test2=Usolconj[]'*test[];  //car on a fait la conjugaison plus haut
+
+				MSRRealinftyD(nn,itercapteur)=real(test2);
+				MSRImaginftyD(nn,itercapteur)=imag(test2);
+		 } // FIN Boucle de remplissage du FF
+
+		 // Neumann resolution
+ 		Usoltot[]=ANeumann^-1*F[];
+ 		Usol = Usoltot-phiinfty;
+
+ 		if(PlotFlag==1){
+ 			PlotTemp = real(Usoltot);
+ 			plot(PlotTemp,fill=1,wait=1,value=1,cmm = "Usoltot Neumann");
+ 			PlotTemp = real(Usol);
+ 			plot(PlotTemp,fill=1,wait=1,value=1,cmm = "Usol Neumann");
+ 		}
+
+		for (int nn=0;nn<Nbcapteur;nn++)
+		{ // Boucle de remplissage du FF
+			 func PhiinftyRecepteur=exp(-1.i*k*(cos(thetaRecepteur(nn))*x+sin(thetaRecepteur(nn))*y));
+			 phiinfty=PhiinftyRecepteur;
+			 test[]=FF*phiinfty[];
+						 Usolconj[]=conj(Usol[]);
+			 test2=Usolconj[]'*test[];  //car on a fait la conjugaison plus haut
+
+			 MSRRealinftyN(nn,itercapteur)=real(test2);
+			 MSRImaginftyN(nn,itercapteur)=imag(test2);
+		} // FIN Boucle de remplissage du FF
+
+
+
+		// Impedance resolution
+	 Usoltot[]=AImpedance^-1*F[];
+	 Usol = Usoltot-phiinfty;
+
+	 if(PlotFlag==1){
+		 PlotTemp = real(Usoltot);
+		 plot(PlotTemp,fill=1,wait=1,value=1,cmm = "Usoltot Impedance");
+		 PlotTemp = real(Usol);
+		 plot(PlotTemp,fill=1,wait=1,value=1,cmm = "Usol Impedance");
+	 }
+
+	 for (int nn=0;nn<Nbcapteur;nn++)
+	 { // Boucle de remplissage du FF
+			func PhiinftyRecepteur=exp(-1.i*k*(cos(thetaRecepteur(nn))*x+sin(thetaRecepteur(nn))*y));
+			phiinfty=PhiinftyRecepteur;
+			test[]=FF*phiinfty[];
+						Usolconj[]=conj(Usol[]);
+			test2=Usolconj[]'*test[];  //car on a fait la conjugaison plus haut
+
+			MSRRealinftyI(nn,itercapteur)=real(test2);
+			MSRImaginftyI(nn,itercapteur)=imag(test2);
+	 } // FIN Boucle de remplissage du FF
+
+
+	} // FIN boucle sur onde incidente
+
+
+
+// Dirichlet
+		 {
+		 ofstream fileoutput("FRealD" + ".dat");
+		 fileoutput<< k << " " << Rin << " " << ax << " "<< ay << " " << MSRRealinftyD;
+		 } ;
+		 {
+		 ofstream fileoutput("FImageD" + ".dat");
+		 fileoutput<< k << " " << Rin << " " << ax << " "<< ay << " " << MSRImaginftyD;
+		 } ;
+
+// Neumann
+		 {
+		ofstream fileoutput("FRealN" + ".dat");
+		fileoutput<< k << " " << Rin << " " << ax << " "<< ay << " " << MSRRealinftyN;
+		} ;
+		{
+		ofstream fileoutput("FImageN" + ".dat");
+		fileoutput<< k << " " << Rin << " " << ax << " "<< ay << " " << MSRImaginftyN;
+		} ;
+// Impedance
+		{
+		ofstream fileoutput("FRealI" + ".dat");
+		fileoutput<< k << " " << Rin << " " << ax << " "<< ay << " " << MSRRealinftyI;
+		} ;
+		{
+		ofstream fileoutput("FImageI" + ".dat");
+		fileoutput<< k << " " << Rin << " " << ax << " "<< ay << " " << MSRImaginftyI;
+		} ;
+
+	cout<< clock()-ttt<<endl;

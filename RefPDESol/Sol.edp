@@ -1,0 +1,136 @@
+// on calcule psi1 = dnu(w)
+// où w est la solutions de Helmholtz sur disque avec données de Dirichlet égale à phiz sur le bord.
+
+macro Grad(u) [dx(u),dy(u)]//
+
+real kmin = 15;
+real kmax = 15;
+real dk = 0.05; // pas de la discretisation en k
+real[int] K = kmin:dk:kmax;
+int Nk = K.n;
+
+bool DisplayPlotFlag = 0;
+
+cout << K << endl;
+// borders
+int Dirichlet = 96;
+real R = .3; // Rayon de l'obstacle artificiel
+border Cercle(t=0,2.*pi){x=R*cos(t);y=R*sin(t);label = Dirichlet;};
+
+
+
+
+// Maillage
+int Nh = 500;
+
+// Z sampling
+int NbZ = 1;
+real[int] Zx(NbZ),Zy(NbZ);
+
+	Zx(0) = -0.15; Zy(0) = -0.15;
+
+
+// Confirmation du nombre de boucle:
+int NBoucles = ((kmax-kmin)/dk + 1)*NbZ;
+cout << "NBoucles = " << NBoucles << "tps min:" << NBoucles*NbZ/60 << endl;
+
+
+mesh Th=buildmesh(Cercle(Nh));
+int Nbe = Th.nbe;
+plot(Th,wait = 1);
+
+fespace FS2(Th,P2);
+fespace FS1(Th,P1);
+
+FS2<complex> w;
+complex[int] rhs(FS2.ndof);
+FS2 PlotTemp;
+real k;
+real[int] outputR(Nbe),outputI(Nbe);
+
+for(int iterk = 0; iterk<Nk; iterk++)
+{
+	cout << iterk+1 << "/" << Nk << endl;
+	real ttt=clock();
+	for(int iterz = 0;iterz<NbZ;iterz++)
+	{
+
+		k = K(iterk);
+
+
+
+		// fonction de Green
+		func Green = 1i/4.*(j0(k*sqrt((x-Zx(iterz))^2 + (y-Zy(iterz))^2)) + 1i*y0(k*sqrt((x-Zx(iterz))^2 + (y-Zy(iterz))^2)));
+		FS2<complex> G = Green;
+
+		// Résolution du problème de Dirichlet
+		varf BiLi(u,v)= int2d(Th)(Grad(v)'*Grad(u)-u*v'*k^2) + on(Dirichlet,u=Green); // bilinear form of helmholtz equation
+		matrix<complex> A = BiLi(FS2,FS2);
+		set(A,solver=sparsesolver);
+		varf vrhs(u,v) = on(Dirichlet,u=Green);
+		rhs = vrhs(0,FS2);
+		w[]=A^-1*rhs;
+
+		// calcul de la quantité d'intéret d_nu(w-Green)
+		func nx=x/sqrt(x^2+y^2+1e-10);
+		func ny=y/sqrt(x^2+y^2+1e-10);
+
+		FS2<complex> Difference = w - G;
+		FS1<complex> output = nx*dx(Difference)+ny*dy(Difference);
+
+		if(DisplayPlotFlag==1)
+		{
+
+			PlotTemp = real(Difference);
+			plot(PlotTemp,fill=1,wait = 1,value=1,cmm = "Re(w-G)");
+
+			PlotTemp = real(G);
+			plot(PlotTemp,fill=1,wait = 1,value=1,cmm = "Re G");
+
+			PlotTemp = real(w);
+			plot(PlotTemp,fill=1,wait=1,value=1,cmm = "Re w");
+
+			PlotTemp = real(output);
+			plot(PlotTemp,fill=1,wait=1,value=1,cmm = "Re dn(w-G)");
+
+
+			PlotTemp = imag(Difference);
+			plot(PlotTemp,fill=1,wait = 1,value=1,cmm = "Im(w-G)");
+
+			PlotTemp = imag(G);
+			plot(PlotTemp,fill=1,wait = 1,value=1,cmm = "ImGreen");
+
+			PlotTemp = imag(w);
+			plot(PlotTemp,fill=1,wait=1,value=1,cmm = "Im w");
+
+			PlotTemp = imag(output);
+			plot(PlotTemp,fill=1,wait=1,value=1,cmm = "Im dn(w-G)");
+
+	}
+
+
+		for(int j = 0; j<Nbe; j++)
+		{
+			outputR(j) = real(output[][Th.be(j)[0]]);
+			outputI(j) = imag(output[][Th.be(j)[0]]);
+
+		}
+
+
+
+
+
+		 {
+		 ofstream fileoutput("DnuReal"  + ".dat",append);
+		 fileoutput << R << " " << k << " " << Zx(iterz) << " " << Zy(iterz) << " " << outputR;
+		 } ;
+
+		 {
+		 ofstream fileoutput("DnuImage" + ".dat",append);
+		 fileoutput<< R << " " << k << " " << Zx(iterz) << " " << Zy(iterz) << " " << outputI;
+		 } ;
+
+
+ 	} //Fin de boucle iterz
+ 	cout << clock()-ttt<<endl;
+}//fin de boucle iterk
